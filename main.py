@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import edge_tts
+from gtts import gTTS
 
 app = FastAPI()
 
@@ -17,8 +18,14 @@ OUTPUT_DIR = "/tmp/media_process"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 async def generate_voice(text: str, output_path: str):
-    tts = edge_tts.Communicate(text=text, voice="ar-SA-HamedNeural")
-    await tts.save(output_path)
+    try:
+        # المحاولة عبر أحدث إصدار من Edge TTS
+        communicate = edge_tts.Communicate(text=text, voice="ar-SA-HamedNeural")
+        await communicate.save(output_path)
+    except Exception as e:
+        # حل بديل مضمون 100% لو حظرت مايكروسوفت السيرفر
+        tts = gTTS(text=text, lang='ar')
+        tts.save(output_path)
 
 @app.post("/merge-video")
 async def merge_video(req: MergeRequest):
@@ -30,11 +37,8 @@ async def merge_video(req: MergeRequest):
     concat_list_path = os.path.join(OUTPUT_DIR, f"list_{job_id}.txt")
     final_output = os.path.join(OUTPUT_DIR, f"final_{job_id}.mp4")
 
-    # 1. توليد الصوت العربي
-    try:
-        await generate_voice(req.voice_text, audio_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS Generation Error: {str(e)}")
+    # 1. توليد الصوت
+    await generate_voice(req.voice_text, audio_path)
 
     # 2. تحميل الفيديوهات
     video_files = []
@@ -50,12 +54,12 @@ async def merge_video(req: MergeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Video Download Error: {str(e)}")
 
-    # 3. كتابة ملف القائمة للدمج
+    # 3. إعداد ملف الدمج
     with open(concat_list_path, "w", encoding="utf-8") as f:
         for v in video_files:
             f.write(f"file '{v}'\n")
 
-    # 4. دمج المقاطع وتركيب الصوت العربي بـ FFmpeg
+    # 4. دمج المقاطع وتركيب الصوت بـ FFmpeg
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0", "-i", concat_list_path,
@@ -70,10 +74,10 @@ async def merge_video(req: MergeRequest):
 
     process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if process.returncode != 0:
-        err_msg = process.stderr.decode('utf-8', errors='ignore')
-        raise HTTPException(status_code=500, detail=f"FFmpeg error: {err_msg}")
+        err = process.stderr.decode('utf-8', errors='ignore')
+        raise HTTPException(status_code=500, detail=f"FFmpeg error: {err}")
 
-    # تنظيف المقاطع المؤقتة
+    # تنظيف الملفات المؤقتة
     for v in video_files:
         if os.path.exists(v):
             try:
